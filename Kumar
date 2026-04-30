@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>KURMURYA</title>
+<style>
+
+body{
+background:black;
+color:white;
+font-family:Arial;
+text-align:center;
+padding-top:100px;
+}
+
+.box{
+background:#111;
+width:300px;
+margin:auto;
+padding:20px;
+border-radius:15px;
+box-shadow:0 0 20px gold;
+}
+
+input{
+width:90%;
+padding:10px;
+margin-top:15px;
+border:none;
+border-radius:10px;
+}
+
+button{
+margin-top:20px;
+padding:10px 20px;
+background:gold;
+border:none;
+border-radius:10px;
+font-weight:bold;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="box">
+
+<h1>👑 KURMURYA</h1>
+
+<input type="number" placeholder="Mobile Number">
+
+<br><br>
+
+<input type="password" placeholder="Password">
+
+<br><br>
+
+<button>LOGIN</button>
+
+</div>
+
+</body>
+</html>
