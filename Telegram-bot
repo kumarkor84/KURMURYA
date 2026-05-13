@@ -1,1 +1,1614 @@
-hello
+# =========================================================
+#                    IMPORT
+# =========================================================
+
+import sqlite3
+import random
+import asyncio
+import requests
+
+from telegram import *
+from telegram.ext import *
+from telegram.error import BadRequest
+
+# =========================================================
+#                    CONFIG
+# =========================================================
+
+TOKEN = "8786949796:AAE2-c6aIhE2sozBolyL_K7Giph6zbno8Tw"
+ADMIN_ID = 7335163273
+
+ROOM_EXPIRE_TIME = 60
+TURN_TIME = 60
+
+ULTRA_TOKEN = "gRkDpcryDgOkFoFrQzThU40KEDUdLJLVUi2hxOvnqaJp"
+ULTRA_KEY = "E5K9nx8WiIqzDlHkY"
+
+# ================= GAME CONTROL =================
+
+game_status = {
+    "ox": True,
+}
+
+# =========================================================
+#                    DATABASE
+# =========================================================
+
+conn = sqlite3.connect(
+    "data.db",
+    check_same_thread=False
+)
+
+cur = conn.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users(
+    user_id INTEGER PRIMARY KEY,
+    balance INTEGER DEFAULT 5,
+    wallet TEXT
+)
+""")
+
+conn.commit()
+
+# =========================================================
+#                    MEMORY
+# =========================================================
+
+bot_games = {}
+rooms = {}
+
+# =========================================================
+#                    MENU
+# =========================================================
+
+def menu():
+
+    return ReplyKeyboardMarkup(
+        [
+            ["🎮 Game", "💰 Balance"],
+            ["💼 Wallet", "📥 Deposit"],
+            ["💸 Withdraw"]
+        ],
+        resize_keyboard=True
+    )
+
+# =========================================================
+#                    START
+# =========================================================
+
+async def start(update: Update, context):
+
+    uid = update.effective_user.id
+
+    cur.execute(
+        "INSERT OR IGNORE INTO users(user_id) VALUES(?)",
+        (uid,)
+    )
+
+    conn.commit()
+
+    await update.message.reply_text(
+        """
+🎮 Welcome To Game Bot
+
+💰 Play & Earn
+        """,
+        reply_markup=menu()
+    )
+
+# =========================================================
+#                    BALANCE
+# =========================================================
+
+async def balance(update: Update, context):
+
+    uid = update.effective_user.id
+
+    bal = cur.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (uid,)
+    ).fetchone()[0]
+
+    await update.message.reply_text(
+        f"💰 Balance : ₹{bal}"
+    )
+
+# =========================================================
+#                    WALLET
+# =========================================================
+
+async def wallet(update: Update, context):
+
+    context.user_data["wallet"] = True
+
+    await update.message.reply_text(
+        "📱 Send Wallet Number"
+    )
+
+# =========================================================
+#                    DEPOSIT
+# =========================================================
+
+async def deposit(update: Update, context):
+
+    await update.message.reply_text(
+        """
+📥 Deposit Contact
+
+👉 @kumarkor
+        """
+    )
+
+# =========================================================
+#                    WITHDRAW CALLBACK
+# =========================================================
+
+async def withdraw_callback(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    data = q.data.split("_")
+
+    action = data[0]
+    user_id = int(data[1])
+    amount = int(data[2])
+
+    # ACCEPT
+    if action == "accept":
+
+        # USER WALLET
+        wallet = cur.execute(
+            "SELECT wallet FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()[0]
+
+        try:
+
+            # API URL
+            url = f"https://ultra-pay.store/APIs/api?token={ULTRA_TOKEN}&key={ULTRA_KEY}&paytoNumber={wallet}&amount={amount}&comment=Withdraw"
+
+            # REQUEST
+            r = requests.get(url)
+
+            # DEBUG
+            print(r.status_code)
+            print(r.text)
+
+            result = r.text
+
+            # SUCCESS MESSAGE
+            await context.bot.send_message(
+                user_id,
+                f"""
+✅ Withdraw Success
+
+💰 Amount : ₹{amount}
+🏦 Wallet : {wallet}
+                """
+            )
+
+            # ADMIN RESULT
+            await q.edit_message_text(
+                f"✅ Payment Sent\n{result}"
+            )
+
+        except Exception as e:
+
+            # REFUND
+            cur.execute(
+                "UPDATE users SET balance=balance+? WHERE user_id=?",
+                (amount, user_id)
+            )
+
+            conn.commit()
+
+            await context.bot.send_message(
+                user_id,
+                "❌ Payment Failed\n💰 Refund Added"
+            )
+
+            await q.edit_message_text(
+                f"❌ API ERROR\n{e}"
+            )
+
+    # REJECT
+    elif action == "reject":
+
+        cur.execute(
+            "UPDATE users SET balance=balance+? WHERE user_id=?",
+            (amount, user_id)
+        )
+
+        conn.commit()
+
+        await context.bot.send_message(
+            user_id,
+            f"❌ Withdraw Rejected\n💰 Refund ₹{amount}"
+        )
+
+        await q.edit_message_text(
+            "❌ Rejected"
+        )
+
+# =========================================================
+#                    SELECT WITHDRAW TYPE
+# =========================================================
+
+async def select_type(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "withdraw_vsv":
+        context.user_data["type"] = "VSV"
+
+    else:
+        context.user_data["type"] = "UltraPay"
+
+    context.user_data["withdraw"] = True
+
+    await q.message.reply_text(
+        "💸 Enter Withdraw Amount"
+    )
+
+
+# =========================================================
+#                    WITHDRAW
+# =========================================================
+
+async def withdraw(update: Update, context):
+
+    if "withdraw" not in context.user_data:
+        return
+
+    if not update.message.text.isdigit():
+
+        await update.message.reply_text(
+            "❌ Send Valid Number"
+        )
+
+        return
+
+    amount = int(update.message.text)
+
+    user_id = update.effective_user.id
+
+    # BALANCE CHECK
+    data = cur.execute(
+        "SELECT balance,wallet FROM users WHERE user_id=?",
+        (user_id,)
+    ).fetchone()
+
+    balance = data[0]
+    wallet = data[1]
+
+    if amount > balance:
+
+        await update.message.reply_text(
+            "❌ Low Balance"
+        )
+
+        return
+
+    # BALANCE CUT
+    cur.execute(
+        "UPDATE users SET balance=balance-? WHERE user_id=?",
+        (amount, user_id)
+    )
+
+    conn.commit()
+
+    # ADMIN BUTTON
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Accept",
+                callback_data=f"accept_{user_id}_{amount}"
+            ),
+
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=f"reject_{user_id}_{amount}"
+            )
+        ]
+    ])
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"""
+💸 New Withdraw Request
+
+👤 User : {user_id}
+💰 Amount : ₹{amount}
+🏦 Wallet : {wallet}
+        """,
+        reply_markup=keyboard
+    )
+
+    await update.message.reply_text(
+        "✅ Withdraw Request Sent"
+    )
+
+    context.user_data["withdraw"] = False
+
+# =========================================
+#               GAME MENU
+# =========================================
+
+async def game_menu(update: Update, context):
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "❌⭕ OX",
+                callback_data="game_ox"
+            )
+        ]
+    ])
+
+    await update.message.reply_text(
+        "🎮 Select Game",
+        reply_markup=keyboard
+    )
+
+# =========================================================
+#                    SELECT GAME
+# =========================================================
+
+async def select_game(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    # OX MENU
+    if q.data == "game_ox":
+
+        keyboard = InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "🤖 Bot",
+                    callback_data="ox_bot"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "➕ Create Room",
+                    callback_data="create_game"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "⚡ Join Room",
+                    callback_data="join_room_list"
+                )
+            ]
+
+        ])
+
+        await q.message.reply_text(
+            "❌⭕ OX GAME",
+            reply_markup=keyboard
+        )
+
+# =========================================================
+#                    CHECK OX WIN
+# =========================================================
+
+def check(board, p):
+
+    wins = [
+
+        (0,1,2),
+        (3,4,5),
+        (6,7,8),
+
+        (0,3,6),
+        (1,4,7),
+        (2,5,8),
+
+        (0,4,8),
+        (2,4,6)
+    ]
+
+    for a,b,c in wins:
+
+        if board[a] == board[b] == board[c] == p:
+
+            return True
+
+    return False
+
+# =========================================================
+#                    OX BOARD
+# =========================================================
+
+def board_ui(board, prefix):
+
+    keyboard = []
+
+    for i in range(0, 9, 3):
+
+        row = []
+
+        for j in range(3):
+
+            index = i + j
+
+            value = board[index]
+
+            if value == " ":
+                value = "⬜"
+
+            row.append(
+                InlineKeyboardButton(
+                    text=value,
+                    callback_data=f"{prefix}_{index}"
+                )
+            )
+
+        keyboard.append(row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+# =========================================================
+#                    OX BOT GAME
+# =========================================================
+
+async def ox_bot(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    # GAME OFF CHECK
+    if not game_status["ox"]:
+        await q.message.reply_text("❌ OX GAME OFF")
+        return
+
+    uid = q.from_user.id
+
+    bot_games[uid] = [" "] * 9
+
+    await q.message.reply_text(
+        """
+🤖 BOT GAME START
+
+⭕ You = O
+❌ Bot = X
+        """,
+        reply_markup=board_ui(
+            bot_games[uid],
+            "bot"
+        )
+    )
+
+# =========================================================
+#                    OX BOT MOVE
+# =========================================================
+
+async def bot_move(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    uid = q.from_user.id
+
+    if uid not in bot_games:
+        return
+
+    board = bot_games[uid]
+
+    pos = int(q.data.split("_")[1])
+
+    if board[pos] != " ":
+        return
+
+    # USER MOVE
+    board[pos] = "O"
+
+    # USER WIN
+    if check(board, "O"):
+
+        await q.edit_message_text(
+            "🎉 YOU WIN"
+        )
+
+        del bot_games[uid]
+
+        return
+
+    # =========================================
+    # BOT AI
+    # =========================================
+
+    move = None
+
+    # 1. BOT WIN MOVE
+    for i in range(9):
+
+        if board[i] == " ":
+
+            test = board.copy()
+            test[i] = "X"
+
+            if check(test, "X"):
+
+                move = i
+                break
+
+    # 2. BLOCK USER WIN
+    if move is None:
+
+        for i in range(9):
+
+            if board[i] == " ":
+
+                test = board.copy()
+                test[i] = "O"
+
+                if check(test, "O"):
+
+                    move = i
+                    break
+
+    # 3. CENTER
+    if move is None and board[4] == " ":
+        move = 4
+
+    # 4. CORNERS
+    if move is None:
+
+        corners = []
+
+        for i in [0,2,6,8]:
+
+            if board[i] == " ":
+                corners.append(i)
+
+        if corners:
+            move = random.choice(corners)
+
+    # 5. ANY EMPTY
+    if move is None:
+
+        empty = []
+
+        for i in range(9):
+
+            if board[i] == " ":
+                empty.append(i)
+
+        if empty:
+            move = random.choice(empty)
+
+    # BOT MOVE
+    if move is not None:
+        board[move] = "X"
+
+    # BOT WIN
+    if check(board, "X"):
+
+        await q.edit_message_text(
+            "🤖 BOT WIN"
+        )
+
+        del bot_games[uid]
+
+        return
+
+    # DRAW
+    if " " not in board:
+
+        await q.edit_message_text(
+            "🤝 MATCH DRAW"
+        )
+
+        del bot_games[uid]
+
+        return
+
+    # UPDATE BOARD
+    await q.edit_message_reply_markup(
+        reply_markup=board_ui(board, "bot")
+    )
+
+# =========================================================
+#                    ROOM EXPIRE
+# =========================================================
+
+async def room_expire(room_id, context, game):
+
+    await asyncio.sleep(ROOM_EXPIRE_TIME)
+
+    if game == "ox":
+
+        if room_id not in rooms:
+
+            return
+
+        room = rooms[room_id]
+
+        if room["player2"] is None:
+
+            await context.bot.send_message(
+                room["player1"],
+                "⌛ OX Room Cancelled"
+            )
+
+            del rooms[room_id]
+
+# =========================================================
+#                    OX CREATE ROOM
+# =========================================================
+
+async def create_game(update: Update, context):
+
+    q = update.callback_query
+
+    await q.answer()
+
+    uid = q.from_user.id
+
+    bal = cur.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (uid,)
+    ).fetchone()[0]
+
+    if bal < 1:
+
+        await q.message.reply_text(
+            "❌ Need ₹1 Balance"
+        )
+
+        return
+
+    room_id = random.randint(100000,999999)
+
+    while room_id in rooms:
+
+        room_id = random.randint(100000,999999)
+
+    rooms[room_id] = {
+
+        "player1": uid,
+        "player2": None,
+
+        "board": [" "] * 9,
+
+        "turn": uid,
+
+        "msg1": None,
+        "msg2": None
+    }
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⚡ Join Room",
+                callback_data=f"join_{room_id}"
+            )
+        ]
+    ])
+
+    await q.message.reply_text(
+        f"""
+🎮 OX ROOM CREATED
+
+🆔 ROOM : {room_id}
+
+⌛ Auto Cancel : 1 Minute
+        """,
+        reply_markup=keyboard
+    )
+
+    asyncio.create_task(
+        room_expire(room_id, context, "ox")
+    )
+
+# =========================================================
+#                    OX ROOM LIST
+# =========================================================
+
+async def room_list(update: Update, context):
+
+    q = update.callback_query
+
+    await q.answer()
+
+    keyboard = []
+
+    for room_id, room in rooms.items():
+
+        if room["player2"] is None:
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🎮 Join {room_id}",
+                    callback_data=f"join_{room_id}"
+                )
+            ])
+
+    if len(keyboard) == 0:
+
+        await q.message.reply_text(
+            "❌ No Room Found"
+        )
+
+        return
+
+    await q.message.reply_text(
+        "⚡ Available Rooms",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# =========================================================
+#                    JOIN OX ROOM
+# =========================================================
+
+async def join_game(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    uid = q.from_user.id
+
+    room_id = int(q.data.split("_")[1])
+
+    if room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+
+    if room["player2"] is not None:
+        return
+
+    if uid == room["player1"]:
+        return
+
+    bal = cur.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (uid,)
+    ).fetchone()[0]
+
+    if bal < 1:
+
+        await q.message.reply_text(
+            "❌ Need ₹1 Balance"
+        )
+
+        return
+
+    # CUT BALANCE
+    cur.execute(
+        "UPDATE users SET balance=balance-1 WHERE user_id=?",
+        (room["player1"],)
+    )
+
+    cur.execute(
+        "UPDATE users SET balance=balance-1 WHERE user_id=?",
+        (uid,)
+    )
+
+    conn.commit()
+
+    room["player2"] = uid
+
+    text = f"""
+🎮 OX GAME START
+
+🆔 ROOM : {room_id}
+
+⭕ Player1 = O
+❌ Player2 = X
+
+🏆 Winner Reward : ₹2
+⏰ Auto Move : 10 Sec
+"""
+
+    m1 = await context.bot.send_message(
+        room["player1"],
+        text,
+        reply_markup=board_ui(
+            room["board"],
+            f"room_{room_id}"
+        )
+    )
+
+    m2 = await context.bot.send_message(
+        room["player2"],
+        text,
+        reply_markup=board_ui(
+            room["board"],
+            f"room_{room_id}"
+        )
+    )
+
+    room["msg1"] = m1.message_id
+    room["msg2"] = m2.message_id
+
+    # START TIMER
+    asyncio.create_task(
+        auto_move(room_id, context)
+    )
+
+# =========================================================
+#                    OX ROOM MOVE
+# =========================================================
+
+async def room_move(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    uid = q.from_user.id
+
+    data = q.data.split("_")
+
+    room_id = int(data[1])
+    pos = int(data[2])
+
+    if room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+
+    if room["turn"] != uid:
+
+        await q.answer(
+            "❌ Wait Your Turn",
+            show_alert=True
+        )
+
+        return
+
+    board = room["board"]
+
+    if board[pos] != " ":
+        return
+
+    symbol = "O"
+
+    if uid == room["player2"]:
+        symbol = "X"
+
+    board[pos] = symbol
+
+    # ================= WIN =================
+
+    if check(board, symbol):
+
+        cur.execute(
+            "UPDATE users SET balance=balance+2 WHERE user_id=?",
+            (uid,)
+        )
+
+        conn.commit()
+
+        loser = room["player1"]
+
+        if uid == room["player1"]:
+            loser = room["player2"]
+
+        await context.bot.send_message(
+            uid,
+            "🎉 YOU WIN ₹2"
+        )
+
+        await context.bot.send_message(
+            loser,
+            "❌ YOU LOSE"
+        )
+
+        del rooms[room_id]
+
+        return
+
+    # ================= DRAW =================
+
+    if " " not in board:
+
+        cur.execute(
+            "UPDATE users SET balance=balance+1 WHERE user_id=?",
+            (room["player1"],)
+        )
+
+        cur.execute(
+            "UPDATE users SET balance=balance+1 WHERE user_id=?",
+            (room["player2"],)
+        )
+
+        conn.commit()
+
+        await context.bot.send_message(
+            room["player1"],
+            "🤝 MATCH DRAW\n💰 ₹1 Refund"
+        )
+
+        await context.bot.send_message(
+            room["player2"],
+            "🤝 MATCH DRAW\n💰 ₹1 Refund"
+        )
+
+        del rooms[room_id]
+
+        return
+
+    # ================= TURN CHANGE =================
+
+    if uid == room["player1"]:
+        room["turn"] = room["player2"]
+
+    else:
+        room["turn"] = room["player1"]
+
+    # ================= BOARD UPDATE =================
+
+    await context.bot.edit_message_reply_markup(
+        chat_id=room["player1"],
+        message_id=room["msg1"],
+        reply_markup=board_ui(
+            board,
+            f"room_{room_id}"
+        )
+    )
+
+    await context.bot.edit_message_reply_markup(
+        chat_id=room["player2"],
+        message_id=room["msg2"],
+        reply_markup=board_ui(
+            board,
+            f"room_{room_id}"
+        )
+    )
+
+# =========================================================
+#                    AUTO MOVE TIMER
+# =========================================================
+
+async def auto_move(room_id, context):
+
+    while room_id in rooms:
+
+        await asyncio.sleep(10)
+
+        if room_id not in rooms:
+            return
+
+        room = rooms[room_id]
+
+        board = room["board"]
+
+        # EMPTY BOX
+        empty = []
+
+        for i in range(9):
+
+            if board[i] == " ":
+                empty.append(i)
+
+        if len(empty) == 0:
+            return
+
+        # CURRENT PLAYER
+        current_player = room["turn"]
+
+        # RANDOM MOVE
+        pos = random.choice(empty)
+
+        # SYMBOL
+        symbol = "O"
+
+        if current_player == room["player2"]:
+            symbol = "X"
+
+        # AUTO PLACE
+        board[pos] = symbol
+
+        # ================= WIN =================
+
+        if check(board, symbol):
+
+            cur.execute(
+                "UPDATE users SET balance=balance+2 WHERE user_id=?",
+                (current_player,)
+            )
+
+            conn.commit()
+
+            loser = room["player1"]
+
+            if current_player == room["player1"]:
+                loser = room["player2"]
+
+            await context.bot.send_message(
+                current_player,
+                "🎉 TIME OUT WIN ₹2"
+            )
+
+            await context.bot.send_message(
+                loser,
+                "❌ TIME OUT LOSE"
+            )
+
+            # FINAL BOARD
+            await context.bot.edit_message_reply_markup(
+                chat_id=room["player1"],
+                message_id=room["msg1"],
+                reply_markup=board_ui(
+                    board,
+                    f"room_{room_id}"
+                )
+            )
+
+            await context.bot.edit_message_reply_markup(
+                chat_id=room["player2"],
+                message_id=room["msg2"],
+                reply_markup=board_ui(
+                    board,
+                    f"room_{room_id}"
+                )
+            )
+
+            del rooms[room_id]
+
+            return
+
+        # ================= DRAW =================
+
+        if " " not in board:
+
+            cur.execute(
+                "UPDATE users SET balance=balance+1 WHERE user_id=?",
+                (room["player1"],)
+            )
+
+            cur.execute(
+                "UPDATE users SET balance=balance+1 WHERE user_id=?",
+                (room["player2"],)
+            )
+
+            conn.commit()
+
+            await context.bot.send_message(
+                room["player1"],
+                "🤝 MATCH DRAW"
+            )
+
+            await context.bot.send_message(
+                room["player2"],
+                "🤝 MATCH DRAW"
+            )
+
+            del rooms[room_id]
+
+            return
+
+        # ================= CHANGE TURN =================
+
+        if current_player == room["player1"]:
+
+            room["turn"] = room["player2"]
+
+        else:
+
+            room["turn"] = room["player1"]
+
+        # ================= UPDATE BOARD =================
+
+        await context.bot.edit_message_reply_markup(
+            chat_id=room["player1"],
+            message_id=room["msg1"],
+            reply_markup=board_ui(
+                board,
+                f"room_{room_id}"
+            )
+        )
+
+        await context.bot.edit_message_reply_markup(
+            chat_id=room["player2"],
+            message_id=room["msg2"],
+            reply_markup=board_ui(
+                board,
+                f"room_{room_id}"
+            )
+        )
+
+# =========================================================
+#                    ADMIN PANEL
+# =========================================================
+
+async def admin(update: Update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    keyboard = InlineKeyboardMarkup([
+
+        [
+            InlineKeyboardButton(
+                "💰 User Balance",
+                callback_data="panel_balance"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🎮 Game Control",
+                callback_data="panel_game"
+            )
+        ]
+
+    ])
+
+    await update.message.reply_text(
+        "⚙️ ADMIN PANEL",
+        reply_markup=keyboard
+    )
+
+# =========================================================
+#                    ADMIN BUTTON
+# =========================================================
+
+async def admin_button(update: Update, context):
+
+    q = update.callback_query
+    await q.answer()
+
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    # ================= USER BALANCE =================
+
+    if q.data == "panel_balance":
+
+        keyboard = InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "➕ Balance Add",
+                    callback_data="admin_add"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "➖ Balance Cut",
+                    callback_data="admin_cut"
+                )
+            ]
+
+        ])
+
+        await q.message.reply_text(
+            "💰 USER BALANCE PANEL",
+            reply_markup=keyboard
+        )
+
+    # ================= GAME CONTROL =================
+
+    elif q.data == "panel_game":
+
+        keyboard = InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    f"OX {'🟢 ON' if game_status['ox'] else '🔴 OFF'}",
+                    callback_data="toggle_ox"
+                )
+            ]
+
+        ])
+
+        await q.message.reply_text(
+            "🎮 GAME CONTROL",
+            reply_markup=keyboard
+        )
+
+    # ================= BALANCE ADD =================
+
+    elif q.data == "admin_add":
+
+        context.user_data["admin_add"] = True
+
+        await q.message.reply_text(
+            "Send : userid amount"
+        )
+
+    # ================= BALANCE CUT =================
+
+    elif q.data == "admin_cut":
+
+        context.user_data["admin_cut"] = True
+
+        await q.message.reply_text(
+            "Send : userid amount"
+        )
+
+    # ================= TOGGLE =================
+
+    elif q.data == "toggle_ox":
+
+        game_status["ox"] = not game_status["ox"]
+
+        await q.answer(
+            f"OX {'ON' if game_status['ox'] else 'OFF'}"
+        )
+
+# =========================================================
+#                    ALL TEXT
+# =========================================================
+
+async def all_text(update: Update, context):
+
+    uid = update.effective_user.id
+    txt = update.message.text
+
+    # WITHDRAW BUTTON
+    if txt == "💸 Withdraw":
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⚡ Ultra Pay",
+                    callback_data="withdraw_ultra"
+                )
+            ]
+        ])
+
+        await update.message.reply_text(
+            "💸 Select Withdraw Type",
+            reply_markup=keyboard
+        )
+
+        return
+
+# =====================================================
+    #                    ADMIN ADD
+    # =====================================================
+
+    if context.user_data.get("admin_add"):
+
+        if uid != ADMIN_ID:
+            return
+
+        try:
+
+            user_id, amount = txt.split()
+
+            user_id = int(user_id)
+            amount = int(amount)
+
+            cur.execute(
+                "UPDATE users SET balance=balance+? WHERE user_id=?",
+                (amount, user_id)
+            )
+
+            conn.commit()
+
+            await update.message.reply_text(
+                f"✅ Added ₹{amount} To {user_id}"
+            )
+
+        except:
+
+            await update.message.reply_text(
+                "❌ Format : userid amount"
+            )
+
+        context.user_data["admin_add"] = False
+
+        return
+
+    # =====================================================
+    #                    ADMIN CUT
+    # =====================================================
+
+    if context.user_data.get("admin_cut"):
+
+        if uid != ADMIN_ID:
+            return
+
+        try:
+
+            user_id, amount = txt.split()
+
+            user_id = int(user_id)
+            amount = int(amount)
+
+            cur.execute(
+                "UPDATE users SET balance=balance-? WHERE user_id=?",
+                (amount, user_id)
+            )
+
+            conn.commit()
+
+            await update.message.reply_text(
+                f"✅ Cut ₹{amount} From {user_id}"
+            )
+
+        except:
+
+            await update.message.reply_text(
+                "❌ Format : userid amount"
+            )
+
+        context.user_data["admin_cut"] = False
+
+        return
+
+    # =====================================================
+    #                    SAVE WALLET
+    # =====================================================
+
+    if context.user_data.get("wallet"):
+
+        cur.execute(
+            "UPDATE users SET wallet=? WHERE user_id=?",
+            (txt, uid)
+        )
+
+        conn.commit()
+
+        context.user_data["wallet"] = False
+
+        await update.message.reply_text(
+            "✅ Wallet Saved"
+        )
+
+        return
+
+# =====================================================
+    #                    WITHDRAW SYSTEM
+    # =====================================================
+
+    if context.user_data.get("withdraw"):
+
+        if not txt.isdigit():
+
+            await update.message.reply_text(
+                "❌ Send Valid Number"
+            )
+
+            return
+
+        amount = int(txt)
+
+        data = cur.execute(
+            "SELECT balance,wallet FROM users WHERE user_id=?",
+            (uid,)
+        ).fetchone()
+
+        balance_user = data[0]
+        wallet = data[1]
+
+        if amount > balance_user:
+
+            await update.message.reply_text(
+                "❌ Low Balance"
+            )
+
+            return
+
+        if wallet is None:
+
+            await update.message.reply_text(
+                "❌ Save Wallet First"
+            )
+
+            return
+
+        # CUT BALANCE
+        cur.execute(
+            "UPDATE users SET balance=balance-? WHERE user_id=?",
+            (amount, uid)
+        )
+
+        conn.commit()
+
+        try:
+
+            # API PAYMENT
+            url = f"https://ultra-pay.store/APIs/api?token={ULTRA_TOKEN}&key={ULTRA_KEY}&paytoNumber={wallet}&amount={amount}&comment=Withdraw"
+
+            r = requests.get(url)
+
+            print(r.status_code)
+            print(r.text)
+
+            # SUCCESS
+            await update.message.reply_text(
+                f"""
+✅ Withdraw Success
+
+💰 Amount : ₹{amount}
+🏦 Wallet : {wallet}
+                """
+            )
+
+        except Exception as e:
+
+            # REFUND
+            cur.execute(
+                "UPDATE users SET balance=balance+? WHERE user_id=?",
+                (amount, uid)
+            )
+
+            conn.commit()
+
+            await update.message.reply_text(
+                f"""
+❌ Payment Failed
+
+💰 Refund Added
+
+{e}
+                """
+            )
+
+        context.user_data["withdraw"] = False
+
+        return
+
+# =========================================================
+#                    HANDLER
+# =========================================================
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+# =========================================================
+#                    COMMANDS
+# =========================================================
+
+app.add_handler(
+    CommandHandler(
+        "start",
+        start
+    )
+)
+
+app.add_handler(
+    CommandHandler(
+        "admin",
+        admin
+    )
+)
+
+# =========================================================
+#                    MENU
+# =========================================================
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex("Game"),
+        game_menu
+    )
+)
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex("Balance"),
+        balance
+    )
+)
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex("Wallet"),
+        wallet
+    )
+)
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex("Deposit"),
+        deposit
+    )
+)
+
+# =========================================================
+#                    TEXT
+# =========================================================
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        all_text
+    )
+)
+
+# =========================================================
+#                    CALLBACK HANDLERS
+# =========================================================
+
+app.add_handler(
+    CallbackQueryHandler(
+        select_type,
+        pattern="^withdraw_vsv$|^withdraw_ultra$"
+    )
+)
+
+# ================= GAME MENU =================
+
+app.add_handler(
+    CallbackQueryHandler(
+        select_game,
+        pattern="^game_ox$"
+    )
+)
+
+# ================= OX BOT =================
+
+app.add_handler(
+    CallbackQueryHandler(
+        ox_bot,
+        pattern="^ox_bot$"
+    )
+)
+
+app.add_handler(
+    CallbackQueryHandler(
+        bot_move,
+        pattern="^bot_[0-8]$"
+    )
+)
+
+# ================= OX ROOM =================
+
+app.add_handler(
+    CallbackQueryHandler(
+        create_game,
+        pattern="^ox_user$|^create_game$"
+    )
+)
+
+app.add_handler(
+    CallbackQueryHandler(
+        room_list,
+        pattern="^join_room_list$"
+    )
+)
+
+app.add_handler(
+    CallbackQueryHandler(
+        join_game,
+        pattern="^join_[0-9]+$"
+    )
+)
+
+app.add_handler(
+    CallbackQueryHandler(
+        room_move,
+        pattern="^room_[0-9]+_[0-8]$"
+    )
+)
+
+# ================= ADMIN =================
+
+app.add_handler(
+    CallbackQueryHandler(
+        admin_button,
+        pattern="^panel_|^admin_|^toggle_"
+    )
+)
+
+app.add_handler(
+    CallbackQueryHandler(
+        withdraw_callback,
+        pattern="^accept_|^reject_"
+    )
+)
+
+# =========================================================
+#                    RUN
+# =========================================================
+
+print("🔥 BOT RUNNING...")
+
+app.run_polling(drop_pending_updates=True)
